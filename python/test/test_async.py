@@ -20,6 +20,10 @@ sys.path.append(root)
 # ------------------------------------------------------------------------------
 
 import ccxt.async_support as ccxt  # noqa: E402
+from test_trade import test_trade  # noqa: E402
+from test_order import test_order  # noqa: E402
+from test_ohlcv import test_ohlcv  # noqa: E402
+from test_transaction import test_transaction  # noqa: E402
 
 # ------------------------------------------------------------------------------
 
@@ -98,6 +102,7 @@ def dump_error(*args):
     string = ' '.join([str(arg) for arg in args])
     print(string)
     sys.stderr.write(string + "\n")
+    sys.stderr.flush()
 
 
 # ------------------------------------------------------------------------------
@@ -134,11 +139,25 @@ async def test_order_book(exchange, symbol):
 # ------------------------------------------------------------------------------
 
 
-async def test_ohlcv(exchange, symbol):
+async def test_ohlcvs(exchange, symbol):
+    ignored_exchanges = [
+        'cex',  # CEX can return historical candles for a certain date only
+        'okex',  # okex fetchOHLCV counts "limit" candles from current time backwards
+        'okcoinusd',  # okex base class
+    ]
+    if exchange.id in ignored_exchanges:
+        return
     if exchange.has['fetchOHLCV']:
         delay = int(exchange.rateLimit / 1000)
         await asyncio.sleep(delay)
-        ohlcvs = await exchange.fetch_ohlcv(symbol)
+        timeframes = exchange.timeframes if exchange.timeframes else {'1d': '1d'}
+        timeframe = list(timeframes.keys())[0]
+        limit = 10
+        duration = exchange.parse_timeframe(timeframe)
+        since = exchange.milliseconds() - duration * limit * 1000 - 1000
+        ohlcvs = await exchange.fetch_ohlcv(symbol, timeframe, since, limit)
+        for ohlcv in ohlcvs:
+            test_ohlcv(exchange, ohlcv, symbol, int(time.time() * 1000))
         dump(green(exchange.id), 'fetched', green(len(ohlcvs)), 'OHLCVs')
     else:
         dump(yellow(exchange.id), 'fetching OHLCV not supported')
@@ -147,6 +166,11 @@ async def test_ohlcv(exchange, symbol):
 
 
 async def test_tickers(exchange, symbol):
+    ignored_exchanges = [
+        'digifinex',  # requires apiKey to call v2 tickers
+    ]
+    if exchange.id in ignored_exchanges:
+        return
     if exchange.has['fetchTickers']:
         delay = int(exchange.rateLimit / 1000)
         await asyncio.sleep(delay)
@@ -203,6 +227,11 @@ async def test_l2_order_books_async(exchange):
 
 
 async def test_ticker(exchange, symbol):
+    ignored_exchanges = [
+        'digifinex',  # requires apiKey to call v2 tickers
+    ]
+    if exchange.id in ignored_exchanges:
+        return
     if exchange.has['fetchTicker']:
         delay = int(exchange.rateLimit / 1000)
         await asyncio.sleep(delay)
@@ -229,9 +258,73 @@ async def test_trades(exchange, symbol):
         await asyncio.sleep(delay)
         # dump(green(exchange.id), green(symbol), 'fetching trades...')
         trades = await exchange.fetch_trades(symbol)
-        dump(green(exchange.id), green(symbol), 'fetched', green(len(list(trades))), 'trades')
+        if trades:
+            test_trade(exchange, trades[0], symbol, int(time.time() * 1000))
+        dump(green(exchange.id), green(symbol), 'fetched', green(len(trades)), 'trades')
     else:
         dump(green(exchange.id), green(symbol), 'fetch_trades() not supported')
+
+# ------------------------------------------------------------------------------
+
+
+async def test_orders(exchange, symbol):
+    if exchange.has['fetchOrders']:
+        delay = int(exchange.rateLimit / 1000)
+        await asyncio.sleep(delay)
+        # dump(green(exchange.id), green(symbol), 'fetching orders...')
+        orders = await exchange.fetch_orders(symbol)
+        for order in orders:
+            test_order(exchange, order, symbol, int(time.time() * 1000))
+        dump(green(exchange.id), green(symbol), 'fetched', green(len(orders)), 'orders')
+    else:
+        dump(green(exchange.id), green(symbol), 'fetch_orders() not supported')
+
+# ------------------------------------------------------------------------------
+
+
+async def test_closed_orders(exchange, symbol):
+    if exchange.has['fetchClosedOrders']:
+        delay = int(exchange.rateLimit / 1000)
+        await asyncio.sleep(delay)
+        # dump(green(exchange.id), green(symbol), 'fetching orders...')
+        orders = await exchange.fetch_closed_orders(symbol)
+        for order in orders:
+            test_order(exchange, order, symbol, int(time.time() * 1000))
+            assert order['status'] == 'closed' or order['status'] == 'canceled'
+        dump(green(exchange.id), green(symbol), 'fetched', green(len(orders)), 'closed orders')
+    else:
+        dump(green(exchange.id), green(symbol), 'fetch_closed_orders() not supported')
+
+# ------------------------------------------------------------------------------
+
+
+async def test_open_orders(exchange, symbol):
+    if exchange.has['fetchOpenOrders']:
+        delay = int(exchange.rateLimit / 1000)
+        await asyncio.sleep(delay)
+        # dump(green(exchange.id), green(symbol), 'fetching orders...')
+        orders = await exchange.fetch_open_orders(symbol)
+        for order in orders:
+            test_order(exchange, order, symbol, int(time.time() * 1000))
+            assert order['status'] == 'open'
+        dump(green(exchange.id), green(symbol), 'fetched', green(len(orders)), 'open orders')
+    else:
+        dump(green(exchange.id), green(symbol), 'fetch_open_orders() not supported')
+
+# ------------------------------------------------------------------------------
+
+
+async def test_transactions(exchange, symbol):
+    if exchange.has['fetchTransactions']:
+        delay = int(exchange.rateLimit / 1000)
+        await asyncio.sleep(delay)
+
+        transactions = await exchange.fetch_transactions(symbol)
+        for transaction in transactions:
+            test_transaction(exchange, transaction, symbol, int(time.time() * 1000))
+        dump(green(exchange.id), green(symbol), 'fetched', green(len(transactions)), 'transactions')
+    else:
+        dump(green(exchange.id), green(symbol), 'fetch_transactions() not supported')
 
 # ------------------------------------------------------------------------------
 
@@ -246,9 +339,14 @@ async def test_symbol(exchange, symbol):
     else:
         await test_order_book(exchange, symbol)
         await test_trades(exchange, symbol)
+        if exchange.apiKey:
+            await test_orders(exchange, symbol)
+            await test_open_orders(exchange, symbol)
+            await test_closed_orders(exchange, symbol)
+            await test_transactions(exchange, symbol)
 
     await test_tickers(exchange, symbol)
-    await test_ohlcv(exchange, symbol)
+    await test_ohlcvs(exchange, symbol)
 
 # ------------------------------------------------------------------------------
 
@@ -269,6 +367,7 @@ async def test_exchange(exchange):
     symbol = keys[0]
     symbols = [
         'BTC/USD',
+        'BTC/USDT',
         'BTC/CNY',
         'BTC/EUR',
         'BTC/ETH',
@@ -293,22 +392,13 @@ async def test_exchange(exchange):
         return
 
     # move to testnet/sandbox if possible before accessing the balance if possible
-    if 'test' in exchange.urls:
-        exchange.urls['api'] = exchange.urls['test']
+    # if 'test' in exchange.urls:
+    #     exchange.urls['api'] = exchange.urls['test']
 
     await exchange.fetch_balance()
     dump(green(exchange.id), 'fetched balance')
 
     await asyncio.sleep(exchange.rateLimit / 1000)
-
-    if exchange.has['fetchOrders']:
-        try:
-            orders = await exchange.fetch_orders(symbol)
-            dump(green(exchange.id), 'fetched', green(str(len(orders))), 'orders')
-        except (ccxt.ExchangeError, ccxt.NotSupported) as e:
-            dump_error(yellow('[' + type(e).__name__ + ']'), e.args)
-        # except ccxt.NotSupported as e:
-        #     dump(yellow(type(e).__name__), e.args)
 
     # time.sleep(delay)
 
@@ -337,9 +427,8 @@ async def test_exchange(exchange):
 async def try_all_proxies(exchange, proxies=['']):
     current_proxy = 0
     max_retries = len(proxies)
-    # a special case for ccex
-    if exchange.id == 'ccex' and max_retries > 1:
-        current_proxy = 1
+    if exchange.proxy in proxies:
+        current_proxy = proxies.index(exchange.proxy)
     for num_retries in range(0, max_retries):
         try:
             exchange.proxy = proxies[current_proxy]
@@ -347,18 +436,10 @@ async def try_all_proxies(exchange, proxies=['']):
             current_proxy = (current_proxy + 1) % len(proxies)
             await load_exchange(exchange)
             await test_exchange(exchange)
-        except ccxt.RequestTimeout as e:
-            dump_error(yellow('[' + type(e).__name__ + ']'), str(e)[0:200])
-        except ccxt.NotSupported as e:
-            dump_error(yellow('[' + type(e).__name__ + ']'), str(e.args)[0:200])
-        except ccxt.DDoSProtection as e:
-            dump_error(yellow('[' + type(e).__name__ + ']'), str(e.args)[0:200])
-        except ccxt.ExchangeNotAvailable as e:
-            dump_error(yellow('[' + type(e).__name__ + ']'), str(e.args)[0:200])
-        except ccxt.AuthenticationError as e:
-            dump_error(yellow('[' + type(e).__name__ + ']'), str(e)[0:200])
-        except ccxt.ExchangeError as e:
-            dump_error(yellow('[' + type(e).__name__ + ']'), str(e.args)[0:200])
+        except (ccxt.RequestTimeout, ccxt.AuthenticationError, ccxt.NotSupported, ccxt.DDoSProtection, ccxt.ExchangeNotAvailable, ccxt.ExchangeError) as e:
+            print({'type': type(e).__name__, 'num_retries': num_retries, 'max_retries': max_retries}, str(e)[0:200])
+            if (num_retries + 1) == max_retries:
+                dump_error(yellow('[' + type(e).__name__ + ']'), str(e)[0:200])
         else:
             # no exception
             return True
@@ -393,7 +474,7 @@ for id in ccxt.exchanges:
     if sys.version_info[0] < 3:
         exchange_config.update({'enableRateLimit': True})
     if id in config:
-        exchange_config.update(config[id])
+        exchange_config = ccxt.Exchange.deep_extend(exchange_config, config[id])
     exchanges[id] = exchange(exchange_config)
 
 # ------------------------------------------------------------------------------
